@@ -34,7 +34,7 @@ def mutually_exclusively_detect_CME(adata):
     new_df = pd.DataFrame(values, index=coord_tuples)
     
 
-    adata.uns['mule']['opposite score'] = 1-new_df
+    adata.uns['mule']['opposite score'] = new_df
     adata.uns['mule']['mutual exclusive method'] = 'CME'
     adata.uns['mule']['opposite score'].columns = ['mutual_exclusive_score']
 
