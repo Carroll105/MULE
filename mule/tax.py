@@ -17,6 +17,8 @@ warnings.filterwarnings("ignore")
 def mutually_exclusively_detect_CME(adata):
     adata.uns['mule'] = {}
     # data_df = adata.to_df()
+    if scipy.sparse.issparse(adata.X):
+        adata.X = adata.X.toarray()
     X = adata.X.astype(np.int16).T
     res = pd.DataFrame(CME(X))
     res.index = adata.var_names
