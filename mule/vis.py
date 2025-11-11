@@ -11,7 +11,7 @@ from matplotlib import cm
 from IPython.display import Image
 import matplotlib.pyplot as plt
 import numpy as np
-import cupy as cp
+# import cupy as cp
 import time
 
 
@@ -331,47 +331,47 @@ def get_minimum_cover(count):
 #     elbow_rank = np.argsort(dis)[::-1]
 #     return dis, elbow_rank
 
-def merge_strategy_gpu(adata):
-    # 1. 构建邻接矩阵
-    G = adata.uns['mule']["filter opposite subgraph"]
-    nn_m = pd.DataFrame(nx.to_numpy_array(G), index=G.nodes, columns=G.nodes)
-    nn_m_values = nn_m.values  # CPU numpy array
+# def merge_strategy_gpu(adata):
+#     # 1. 构建邻接矩阵
+#     G = adata.uns['mule']["filter opposite subgraph"]
+#     nn_m = pd.DataFrame(nx.to_numpy_array(G), index=G.nodes, columns=G.nodes)
+#     nn_m_values = nn_m.values  # CPU numpy array
 
-    # 2. GPU 计算距离矩阵
-    t0 = time.time()
-    nn_m_gpu = cp.asarray(nn_m_values)
-    # 计算 pdist (condensed distance)
-    diff = nn_m_gpu[:, None, :] - nn_m_gpu[None, :, :]
-    dist_matrix = cp.linalg.norm(diff, axis=2)
-    # 只取上三角矩阵
-    triu_indices = cp.triu_indices(nn_m_gpu.shape[0], k=1)
-    pdist_gpu = dist_matrix[triu_indices]
-    pdist = cp.asnumpy(pdist_gpu)  # 转回 CPU
-    t1 = time.time()
-    print(f"GPU pdist computation time: {t1 - t0:.4f} seconds")
+#     # 2. GPU 计算距离矩阵
+#     t0 = time.time()
+#     nn_m_gpu = cp.asarray(nn_m_values)
+#     # 计算 pdist (condensed distance)
+#     diff = nn_m_gpu[:, None, :] - nn_m_gpu[None, :, :]
+#     dist_matrix = cp.linalg.norm(diff, axis=2)
+#     # 只取上三角矩阵
+#     triu_indices = cp.triu_indices(nn_m_gpu.shape[0], k=1)
+#     pdist_gpu = dist_matrix[triu_indices]
+#     pdist = cp.asnumpy(pdist_gpu)  # 转回 CPU
+#     t1 = time.time()
+#     print(f"GPU pdist computation time: {t1 - t0:.4f} seconds")
 
-    # 3. CPU linkage
-    t0 = time.time()
-    linkage = spc.linkage(pdist, method='ward')
-    t1 = time.time()
-    print(f"CPU linkage computation time: {t1 - t0:.4f} seconds")
+#     # 3. CPU linkage
+#     t0 = time.time()
+#     linkage = spc.linkage(pdist, method='ward')
+#     t1 = time.time()
+#     print(f"CPU linkage computation time: {t1 - t0:.4f} seconds")
 
-    adata.uns['mule']['linkage'] = linkage
+#     adata.uns['mule']['linkage'] = linkage
 
-    # 4. 计算 elbow
-    dis, elbow_rank = cal_elbow(linkage)
+#     # 4. 计算 elbow
+#     dis, elbow_rank = cal_elbow(linkage)
 
-    y = pd.DataFrame(linkage)[2]
-    plt.plot(y, marker='o', markersize=5, label='raw point')
-    plt.scatter(elbow_rank[:10], y.iloc[elbow_rank[:10]], color='r', label='candidate elbow')
-    plt.grid(False)
-    plt.legend()
-    plt.xlabel("Merge step")
-    plt.ylabel("Merge gene set variance")
-    plt.title("Elbow detection with Ward metric (GPU pdist)")
-    plt.xlim(max(linkage.shape[0]-20, 0), linkage.shape[0])
-    plt.show()
+#     y = pd.DataFrame(linkage)[2]
+#     plt.plot(y, marker='o', markersize=5, label='raw point')
+#     plt.scatter(elbow_rank[:10], y.iloc[elbow_rank[:10]], color='r', label='candidate elbow')
+#     plt.grid(False)
+#     plt.legend()
+#     plt.xlabel("Merge step")
+#     plt.ylabel("Merge gene set variance")
+#     plt.title("Elbow detection with Ward metric (GPU pdist)")
+#     plt.xlim(max(linkage.shape[0]-20, 0), linkage.shape[0])
+#     plt.show()
 
-    print("Linkage info (last 20 steps):")
-    print(y.iloc[-20:])
+#     print("Linkage info (last 20 steps):")
+#     print(y.iloc[-20:])
 

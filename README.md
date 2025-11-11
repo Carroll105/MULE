@@ -21,13 +21,8 @@ We recommend using a GPU to calculate the mutual exclusivity score.
 conda create -n mule python=3.10 -y
 conda activate mule
 
-pip install \
-    numpy>=2.2.6 \
-    pandas>=2.3.2 \
-    scanpy>=1.11.4 \
-    numba>=0.61.2 \
-    networkx>=3.4.2 \
-    treelib>=1.7.1
+pip install numpy>=2.2.6 pandas>=2.3.2 scanpy>=1.11.4 numba>=0.61.2 networkx>=3.4.2 treelib>=1.7.1
+
 ```
 Install PyTorch and MULE
 ```
