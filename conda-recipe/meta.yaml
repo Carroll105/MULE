@@ -32,7 +32,7 @@ test:
 about:
   home: https://github.com/Carroll105/MULE
   license: MIT
-  summary: "MULE : Mutual Exclusion in scRNA-seq"
+  summary: "MULE:Mutual Exclusion in scRNA-seq"
   description: |
     MULE (Mutual Exclusion in scRNA-seq) is a tool for detecting mutually exclusive gene expression patterns in single-cell RNA-seq and spatial transcriptomics data.
 
