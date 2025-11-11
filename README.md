@@ -17,6 +17,7 @@ We recommend using a GPU to calculate the mutual exclusivity score.
 - Mutual-Exclusion-Enhanced Metric Learning
 
 ## Installation
+It is recommended to create a dedicated Conda environment.
 ```
 conda create -n mule python=3.10 -y
 conda activate mule
