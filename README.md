@@ -9,12 +9,15 @@ MULE (**Mutual Exclusion in scRNA-seq**) is a tool for detecting mutually exclus
 - Statistical significance testing with FDR correction
 
 ## Installation
-Clone the repository and install dependencies:
-```bash
-git clone https://github.com/Carroll105/MULE.git
-cd MULE
-pip install -r requirements.txt
-```
+nd
+conda create -n mule python=3.10 -y
+conda activate mule
+pip install numba>= 0.61.2
+pip install networkx>=3.4.2
+pip install scanpy>=0.61.2
+pip install -U treelib>=1.7.1
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
 
 ## Usage
 - 

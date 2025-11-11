@@ -7,6 +7,7 @@ import scipy
 import scanpy as sc
 import scipy.cluster.hierarchy as spc
 import copy
+import torch
 from treelib import Tree
 import random
 from numba import njit, prange
@@ -256,7 +257,11 @@ def build_taxonomy_tree(adata):
 
     taxonomy_tree = build_tree(tree_level,graph,adata)
     taxonomy_tree.show()
+
+    for node in taxonomy_tree.all_nodes_itr():
+        node.data = mode_info[node.tag]
     taxonomy_tree_list.append(taxonomy_tree)
+
 
     ## give a multiple tree list
 
@@ -630,3 +635,233 @@ def mule_umap(adata, mode_list, mutual_degree=1.0, min_dist=0.5, spread=1.0):
     adata.obsp = adata_tmp.obsp
 
     # print("mule_umap finished, shape:", adata.obsm['X_umap_mule'].shape)
+
+
+
+import numpy as np
+import torch
+from sklearn.neighbors import NearestNeighbors
+from collections import defaultdict
+from pathlib import Path
+import scanpy as sc
+from treelib import Tree
+import matplotlib.pyplot as plt
+
+
+def get_labels_from_tree(adata, gene_tree, score_func, key='X_pca'):
+    """
+    从 gene module tree 给每个细胞打分并确定标签（稳健版）
+    - 使用 node.data 作为模块基因列表
+    - 与 adata.var_names 求交，避免 KeyError
+    - 空模块打 0 分
+    """
+    nodes = sorted(gene_tree.all_nodes(), key=lambda n: n.identifier)
+    modules = [(n.tag, n.data) for n in nodes]  # (模块名, 基因列表)
+
+    # 2) 逐模块打分
+    score_list = []
+    module_names = []
+    var_set = set(map(str, adata.var_names))  # 统一为字符串比较
+
+    for tag, genes in modules:
+        # 规范化 genes
+        if genes is None:
+            genes = []
+        elif isinstance(genes, str):
+            genes = [genes]
+        else:
+            genes = list(genes)
+
+        # 与 var_names 求交（避免 KeyError）
+        genes_in = [g for g in genes if str(g) in var_set]
+
+        if len(genes_in) == 0:
+            # 该模块在数据中无有效基因 → 记 0 分
+            s = np.zeros(adata.n_obs, dtype=float)
+        else:
+            s = np.asarray(score_func(genes_in, adata)).ravel()
+            # 防御：确保长度匹配
+            if s.shape[0] != adata.n_obs:
+                raise ValueError(f"score_func 返回长度 {s.shape[0]} 与细胞数 {adata.n_obs} 不一致")
+
+        score_list.append(s)
+        module_names.append(tag)
+
+    scores = np.vstack(score_list)
+
+    labels_idx = np.argmax(scores, axis=0)
+    labels = np.array([module_names[i] for i in labels_idx])
+    return labels
+
+# =============================
+# ② 样本池构建
+# =============================
+def build_pos_neg_pools(X, labels, n_neighbors=16):
+    """
+    构建正负样本池
+    """
+    nbrs = NearestNeighbors(n_neighbors=n_neighbors).fit(X)
+    knn_idx = nbrs.kneighbors(return_distance=False)[:, 1:]
+    pos_pool = []
+    for i in range(X.shape[0]):
+        same = [j for j in knn_idx[i] if labels[j] == labels[i]]
+        pos_pool.append(same)
+
+    neg_pool = defaultdict(list)
+    unique_labels = np.unique(labels)
+    for i, li in enumerate(labels):
+        for j, lj in enumerate(labels):
+            if li != lj:
+                neg_pool[i].append(j)
+    return pos_pool, neg_pool
+
+
+# =============================
+# ③ Triplet 采样与 Loss
+# =============================
+def sample_triplets(pos_pool, neg_pool, batch_size, rng=np.random.default_rng()):
+    anchors, pos, neg = [], [], []
+    n_samples = len(pos_pool)
+    while len(anchors) < batch_size:
+        i = rng.integers(0, n_samples)
+        if not pos_pool[i] or not neg_pool[i]:
+            continue
+        j = rng.choice(pos_pool[i])
+        k = rng.choice(neg_pool[i])
+        anchors.append(i); pos.append(j); neg.append(k)
+    return torch.tensor(anchors), torch.tensor(pos), torch.tensor(neg)
+
+
+def margin_vector(labels, a, n, strong_pairs, M_STRONG=3.0, M_WEAK=0.5, device='cpu'):
+    mlist = []
+    for ai, ni in zip(a.tolist(), n.tolist()):
+        pair = {labels[ai], labels[ni]}
+        if pair in strong_pairs:
+            mlist.append(M_STRONG)
+        else:
+            mlist.append(M_WEAK)
+    return torch.tensor(mlist, dtype=torch.float32, device=device)
+
+
+def triplet_loss(Z, a, p, n, labels, strong_pairs, alpha=1.0, beta=0.3):
+    d_ap = (Z[a] - Z[p]).norm(dim=1)
+    d_an = (Z[a] - Z[n]).norm(dim=1)
+    mvec = margin_vector(labels, a, n, strong_pairs, device=Z.device)
+    trip = torch.relu(d_ap - d_an + mvec)
+    compact = d_ap
+    return (alpha * trip + beta * compact).mean()
+
+
+# # =============================
+# # ④ 主训练流程
+# # =============================
+# def train_triplet_embedding(
+#     adata, label_source, output_dir,
+#     epochs=600, batch_size=4096, lr=0.006, strong_pairs=None
+# ):
+#     """
+#     Triplet-Loss 表达空间训练
+#     参数：
+#         label_source: 直接传 label array 或 gene_tree + score_func 组合
+#         strong_pairs: 强排斥标签对（集合）
+#     """
+#     out_dir = Path(output_dir)
+#     out_dir.mkdir(exist_ok=True)
+
+#     if isinstance(label_source, np.ndarray):
+#         labels = label_source
+#     else:
+#         gene_tree, score_func = label_source
+#         labels = get_labels_from_tree(adata, gene_tree, score_func)
+#     adata.obs['label'] = labels
+#     X = adata.obsm['X_pca'].astype('float32')
+#     pos_pool, neg_pool = build_pos_neg_pools(X, labels)
+#     X_torch = torch.as_tensor(X)
+#     n_samples, d = X.shape
+
+#     W = torch.eye(d, d, requires_grad=True)
+#     opt = torch.optim.AdamW([W], lr=lr)
+
+#     rng = np.random.default_rng()
+
+#     for ep in range(epochs + 1):
+#         a, p, n = sample_triplets(pos_pool, neg_pool, batch_size, rng)
+#         Z = X_torch @ W.T
+#         loss = triplet_loss(Z, a, p, n, labels, strong_pairs)
+
+#         opt.zero_grad(); loss.backward(); opt.step()
+
+#         if ep % 60 == 0:
+#             adata.obsm['X_custom'] = Z.detach().cpu().numpy()
+#             sc.pp.neighbors(adata, use_rep='X_custom', n_neighbors=15)
+#             sc.tl.umap(adata, random_state=42)
+#             fig, ax = plt.subplots(figsize=(6.5, 6.5))
+#             sc.pl.umap(adata, color='label', linewidth=1, s=166, ax=ax, show=False)
+#             fig.savefig(out_dir / f"umap_ep{ep:03d}.png", dpi=300, bbox_inches='tight')
+#             plt.close(fig)
+#             adata.write(out_dir / f"adata_ep{ep:03d}.h5ad", compression='gzip')
+
+#         if ep % 20 == 0:
+#             print(f"Ep {ep:4d}/{epochs} | loss={loss.item():.4f}")
+
+def score_func(module_genes, adata):
+    return np.asarray(adata[:, module_genes].X.mean(axis=1)).ravel()
+
+def train_triplet_embedding(
+    adata, tree, 
+    epochs=600, batch_size=4096, lr=0.006, strong_pairs=None,
+    device=None,
+    score_func = score_func
+):
+    # out_dir = Path(output_dir)
+    # out_dir.mkdir(exist_ok=True)
+    label_source = (tree,score_func)
+    if isinstance(label_source, np.ndarray):
+        labels = label_source
+    else:
+        gene_tree, score_func = label_source
+        labels = get_labels_from_tree(adata, gene_tree, score_func)
+    adata.obs['label'] = labels
+    X = adata.obsm['X_pca'].astype('float32')
+    pos_pool, neg_pool = build_pos_neg_pools(X, labels)
+    
+    # 设备选择：优先 GPU
+    if device is None:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    X_torch = torch.as_tensor(X, device=device)   # 放到 device 上
+    n_samples, d = X.shape
+
+    # 初始化投影矩阵 W（可学习）
+    W = torch.eye(d, d, dtype=torch.float32, device=device)
+    W.requires_grad_(True)
+
+    opt = torch.optim.AdamW([W], lr=lr)
+
+    rng = np.random.default_rng()
+    if strong_pairs is None:
+        strong_pairs = set()
+
+    for ep in range(epochs + 1):
+        a, p, n = sample_triplets(pos_pool, neg_pool, batch_size, rng)
+        # 确保索引 tensors 在同一 device（sample_triplets 返回 CPU tensors）
+        a = a.to(device); p = p.to(device); n = n.to(device)
+
+        Z = X_torch @ W.T   # (N, d) @ (d, d).T -> (N, d)
+        loss = triplet_loss(Z, a, p, n, labels, strong_pairs)
+
+        opt.zero_grad(); loss.backward(); opt.step()
+
+        if ep % 60 == 0:
+            adata.obsm['X_custom'] = Z.detach().cpu().numpy()
+            sc.pp.neighbors(adata, use_rep='X_custom', n_neighbors=15)
+            sc.tl.umap(adata, random_state=42)
+            fig, ax = plt.subplots(figsize=(6.5, 6.5))
+            sc.pl.umap(adata, color='label', linewidth=1, s=166, ax=ax, show=False)
+            # fig.savefig(out_dir / f"umap_ep{ep:03d}.png", dpi=300, bbox_inches='tight')
+            plt.close(fig)
+            # adata.write(out_dir / f"adata_ep{ep:03d}.h5ad", compression='gzip')
+
+        if ep % 20 == 0:
+            print(f"Ep {ep:4d}/{epochs} | loss={loss.item():.4f}")
+

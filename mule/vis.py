@@ -11,6 +11,10 @@ from matplotlib import cm
 from IPython.display import Image
 import matplotlib.pyplot as plt
 import numpy as np
+import cupy as cp
+import time
+
+
 
 def polar_score(adata):
     """
@@ -306,134 +310,6 @@ def mode_graph(adata):
     plt.title('Bipartite gene set graph')
     plt.show()
 
-'''save taxonomy tree figure'''
-
-def plot_taxonomy_tree(adata,save_path = "taxonomy_tree.png"):
-
-    for i in adata.uns['mule']['taxonomy_tree_list']:
-        graph = taxonomy_tree(i, adata.uns['mule']['mode info'])
-
-        # show the figure and save
-        Image(save_path)
-        Image(graph.create_png())
-    return graph
-
-'''
-
-Build Tree visulization function
-
-'''
-
-def taxonomy_tree(tree, dictionary, save_path = "taxonomy_tree.png"):
-    '''
-    Given a tree, and a dictionary that contains values corresponding to the tags of the tree nodes, generate a .png file that 
-    shows the tree with the values on its nodes.
-    
-    Params
-    -----------------------
-    tree: treelib
-        The tree to be visualized.
-    dictionary: dictionary
-        Dictionary with the tags of the tree nodes as keys, and their longer explanations as values.
-    is_pdf: boolean, default(False)
-        The file type to save.
-         
-        - False : Saves to .png file, default
-        - True  : Saves to .pdf file.
-    
-    Returns
-    -----------------------
-    None.
-    
-    Saves
-    -----------------------
-    A detailed_tree.png(or .pdf) file, containing the visualized tree.
-    '''
-    import graphviz
-    import subprocess
-    import pydotplus
-    import copy
-    import os
-    
-    # copy the tree and the dict so that they stay the same
-    tree_copy = copy.deepcopy(tree)
-    dict_copy = copy.deepcopy(dictionary)
-            
-    # create a Dict, with node id as name and is_leaf/is_root as value
-    positions = {}
-    for node in tree_copy.all_nodes_itr():
-        # 0 as root, 1 as leaf, 2 as node
-        if node.is_leaf():
-            positions[node.identifier] = 1
-        elif node.is_root():
-            positions[node.identifier] = 0
-        else:
-            positions[node.identifier] = 2
-        
-    # change the tag of the nodes to the values in the dict
-    for node in tree_copy.all_nodes_itr():        
-        
-        # set node name
-        string = node.tag + '\\n'
-        
-        # set node count of genes
-        string += ('num of genes: '+ str(len(dict_copy[node.tag])) + '\\n')
-        
-        # if node is not root
-        if node.is_root() == False:
-            # set several genes in a row for better view, 1*2, 2*3, 3*4, etc.
-            num_in_row = get_minimum_cover(len(dict_copy[node.tag]))
-            for i in range(len(dict_copy[node.tag])):
-                if i%num_in_row != 0:
-                    string += ', '
-                else:
-                    string += '\\n'
-                string += dict_copy[node.tag][i]
-            
-        # change the list to a string
-        node.tag = string
-
-    
-    # Generate DOT code file
-    tree_copy.to_graphviz("detailed_tree.dot", shape = 'Mrecord')
-    
-    # manipulate the dot file
-    graph = pydotplus.graph_from_dot_file("detailed_tree.dot")
-    nodes = graph.get_node_list()
-    edges = graph.get_edge_list()
-    
-    # set the node styles
-    for node in nodes:
-        node.set_style("filled")
-        node.set_fontname("Courier")
-        node.set_penwidth(2)
-        node.set_color("#CBE3C2")
-        node.set_margin(0.12)
-        
-    # set the edge styles
-    for edge in edges:
-        edge.set_arrowsize(0.5)
-        edge.set_color("#826B52")
-    
-    # set the special node styles
-    for node in nodes:
-        if positions[node.get_name()[1:len(node.get_name())-1]]==0:
-            # node is root
-            node.set_color("#6E4721")
-        elif positions[node.get_name()[1:len(node.get_name())-1]]==1:
-            # node is leaf
-            node.set_color('#85A67A')
-    
-    # save the file
-    if(save_path == False):
-        Image(graph.create_png())
-    else:
-        graph.write_png(save_path)
-    
-    # remove the .dot file
-        os.remove("detailed_tree.dot")
-
-    return graph
 
 def get_minimum_cover(count):
     for i in range(0, 20):
@@ -442,3 +318,60 @@ def get_minimum_cover(count):
         
     # if count is too big(larger than 19*20=380), set counts in a row to be 20
     return 20
+
+# def cal_elbow(linkage):
+#     x = np.arange(linkage.shape[0])
+#     y = np.array(pd.DataFrame(linkage)[2])
+
+#     x1, y1 = x[0], y[0]
+#     x2, y2 = x[-1], y[-1]
+
+#     # 点到直线距离
+#     dis = np.abs((y2 - y1)*x - (x2 - x1)*y + x2*y1 - y2*x1) / np.sqrt((y2 - y1)**2 + (x2 - x1)**2)
+#     elbow_rank = np.argsort(dis)[::-1]
+#     return dis, elbow_rank
+
+def merge_strategy_gpu(adata):
+    # 1. 构建邻接矩阵
+    G = adata.uns['mule']["filter opposite subgraph"]
+    nn_m = pd.DataFrame(nx.to_numpy_array(G), index=G.nodes, columns=G.nodes)
+    nn_m_values = nn_m.values  # CPU numpy array
+
+    # 2. GPU 计算距离矩阵
+    t0 = time.time()
+    nn_m_gpu = cp.asarray(nn_m_values)
+    # 计算 pdist (condensed distance)
+    diff = nn_m_gpu[:, None, :] - nn_m_gpu[None, :, :]
+    dist_matrix = cp.linalg.norm(diff, axis=2)
+    # 只取上三角矩阵
+    triu_indices = cp.triu_indices(nn_m_gpu.shape[0], k=1)
+    pdist_gpu = dist_matrix[triu_indices]
+    pdist = cp.asnumpy(pdist_gpu)  # 转回 CPU
+    t1 = time.time()
+    print(f"GPU pdist computation time: {t1 - t0:.4f} seconds")
+
+    # 3. CPU linkage
+    t0 = time.time()
+    linkage = spc.linkage(pdist, method='ward')
+    t1 = time.time()
+    print(f"CPU linkage computation time: {t1 - t0:.4f} seconds")
+
+    adata.uns['mule']['linkage'] = linkage
+
+    # 4. 计算 elbow
+    dis, elbow_rank = cal_elbow(linkage)
+
+    y = pd.DataFrame(linkage)[2]
+    plt.plot(y, marker='o', markersize=5, label='raw point')
+    plt.scatter(elbow_rank[:10], y.iloc[elbow_rank[:10]], color='r', label='candidate elbow')
+    plt.grid(False)
+    plt.legend()
+    plt.xlabel("Merge step")
+    plt.ylabel("Merge gene set variance")
+    plt.title("Elbow detection with Ward metric (GPU pdist)")
+    plt.xlim(max(linkage.shape[0]-20, 0), linkage.shape[0])
+    plt.show()
+
+    print("Linkage info (last 20 steps):")
+    print(y.iloc[-20:])
+
